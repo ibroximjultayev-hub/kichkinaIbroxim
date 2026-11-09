@@ -56,7 +56,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = update.message.text
 
+    
+    user_id = update.effective_user.id
+
     try:
+        await save_message(user_id, "user", question)
+    except Exception:
+        logging.exception("Database save error")
+
+    try:
+        
         response = await client.responses.create(
             model="gpt-4.1-mini",
             instructions=SYSTEM_PROMPT,
@@ -65,6 +74,13 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         answer = response.output_text
 
+        
+        try:
+            await save_message(user_id, "assistant", answer)
+        except Exception:
+            logging.exception("Database save error")
+            
+        
         for i in range(0, len(answer), 4000):
             await update.message.reply_text(answer[i:i+4000])
 
@@ -74,6 +90,19 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Ҳозир жавоб беришда хатолик юз берди. Кейинроқ уриниб кўринг."
         )
 
+async def save_message(user_id, role, content):
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute(
+            """
+            INSERT INTO chat_history (user_id, role, content)
+            VALUES ($1, $2, $3)
+            """,
+            user_id, role, content
+        )
+    finally:
+        await conn.close()
+        
 async def post_init(application):
     await init_db()
     
