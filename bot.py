@@ -1,6 +1,4 @@
 
-
-import asyncpg
 import os
 import logging
 from telegram import Update
