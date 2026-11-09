@@ -1,4 +1,5 @@
 
+
 import asyncpg
 import os
 import logging
@@ -14,6 +15,7 @@ from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO)
 
+DATABASE_URL = os.environ["DATABASE_URL"]
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
@@ -31,6 +33,20 @@ SYSTEM_PROMPT = """
 Ўзингда мавжуд бўлмаган имкониятни бор деб айтма.
 """
 
+async def init_db():
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+    finally:
+        await conn.close()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Ассалому алайкум! Мен Kichkina Ibrohim AI ёрдамчисиман.\n\n"
@@ -58,8 +74,12 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Ҳозир жавоб беришда хатолик юз берди. Кейинроқ уриниб кўринг."
         )
 
+async def post_init(application):
+    await init_db()
+    
+
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(
@@ -71,3 +91,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
