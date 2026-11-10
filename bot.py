@@ -1,818 +1,669 @@
 
-import os
+import OS
 import io
-import re
-import asyncio
-import base64
-import logging
-from datetime import datetime
-from decimal import Decimal
-from zoneinfo import ZoneInfo
-from xml.sax.saxutils import escape
+import qayta
+asyncio import qilish
+base64 ni import qilish
+import jurnalini yuritish
+datetime dan datetime import qilish
+o'nlik kasr importidan o'nlik
+zoneinfo dan ZoneInfo import qiling
+xml.sax.saxutils faylidan import escape
 
-import asyncpg
-from openai import AsyncOpenAI
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    filters,
+asyncpg ni import qilish
+openay import AsyncOpenAI dan
+telegram.ext importidan (
+    Ilovalar quruvchisi,
+    Buyruq boshqaruvchisi,
+    Xabar boshqaruvchisi,
+    filtrlar,
 )
-from docx import Document
-from openpyxl import Workbook, load_workbook
-from pypdf import PdfReader
-from pptx import Presentation
-from reportlab.platypus import SimpleDocTemplate, Paragraph
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+docx import hujjatidan
+openpyxl import ish daftaridan, load_workbook
+pypdf dan import PdfReader
+pptx import taqdimotidan
+reportlab.platypus dan SimpleDocTemplate, Paragrafni import qiling
+reportlab.lib.pagesizes dan A4 faylini import qiling
+reportlab.lib.styles dan ParagraphStyle ni import qiling
+reportlab.pdfbase dan import pdfmetrics
+reportlab.pdfbase.ttfonts dan TTFont ni import qiling
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(daraja=logging.INFO)
 log = logging.getLogger("KichkinaIbrohim")
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 DB_URL = os.environ["DATABASE_URL"]
 AI = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-TZ = ZoneInfo("Asia/Tashkent")
+TZ = ZoneInfo("Osiyo/Toshkent")
 MAX_FILE = 15 * 1024 * 1024
 
-SYSTEM = """
-Сен Kichkina Ibrohim номли шахсий AI ёрдамчисан.
-Ўзбек кирилл, ўзбек лотин ва рус тилларида ишла.
-Фойдаланувчи қайси тилда ёзса, ўша тилда жавоб бер.
-Аввалги суҳбатларни ҳисобга ол.
-Маълумотларни ўйлаб топма.
-Бажармаган амалингни бажардим деб айтма.
+TIZIM = """
+Sen Kichkina Ibrohim nomli shaxsiy AI yordamchisan.
+O'zbek kirill, o'zbek lotin va rus tillarida ishla.
+Foydalanuvchi qaysi tilda yozsa, o'sha tilda javob ber.
+Dastlabki tekshiruvlarni sharhga ol.
+Kunlarni o'ylab topma.
+Baxarmagan amalingni bajardim deb aytma.
 """
 
-HELP = """
+YORDAM = """
 🤖 Kichkina Ibrohim AI
 
-/start - бошлаш
-/help - ёрдам
-/search савол - интернет қидируви
+/start - boshlash
+/help - yordam
+/qidiruv savoli - internet qidiruvi
 
-/task матн - вазифа қўшиш
-/tasks - вазифалар
-/done ID - вазифани якунлаш
+/task matn - vazifa qo'shish
+/tasks - vazifalar
+/done ID - vazifani yoqish
 
-/remind 2026-12-01 09:00 Йиғилиш
-/reminders - эслатмалар
+/eslatamiz 2026-12-01 09:00 Yigilish
+/eslatmalar - eslatmalar
 
-/income 100000 Маош
-/expense 25000 Такси
-/report - молиявий ҳисобот
+/income 100000 Maosh
+/expense 25000 Taksi
+/report - hisobot
 
 /makeword матн - Word
-/makeexcel Исм,Сони;Али,5 - Excel
-/makepdf матн - PDF
-/makeslides Мавзу;Слайд1;Слайд2 - PowerPoint
+/makeexcel Ism,Soni;Ali,5 - Excel
+/makepdf matn - PDF
+/makeslides Mavzu;Slayd1;Slayd2 - PowerPoint
 
-Расм, овоз, PDF, Word ва Excel юбориш мумкин.
-Google Calendar, Instagram, YouTube ва банк
-интеграциялари ҳали уланмаган.
+Rasm, ovoz, PDF, Word va Excel yuklash mumkin.
+Google Taqvim, Instagram, YouTube va bank
+integratsiyalari quroli ulamagan.
 """
 
 
 async def connect():
-    return await asyncpg.connect(DB_URL, timeout=15)
+    return asyncpg.connect(DB_URL, timeout=15) ni kuting
 
 
 async def init_db():
-    conn = await connect()
-    try:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS chat_history (
-                id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW()
+    conn = kutish conn()
+    sinab ko'ring:
+        conn.execute("") ni kuting
+            AGAR JADVAL YARATING AGAR MAVJUD BO'LMASA chat_history (
+                id Katta Seriyali Asosiy Kalit,
+                foydalanuvchi_id BIGINT NULL EMAS,
+                rol matni NULL emas,
+                kontent matni NULL emas,
+                created_at TIMESTAMPTZ STANDART HOZIR()
             )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS tasks (
-                id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                title TEXT NOT NULL,
-                done BOOLEAN DEFAULT FALSE
+        "")
+        conn.execute("") ni kuting
+            Agar mavjud bo'lmasa, jadval yaratish vazifalari (
+                id Katta Seriyali Asosiy Kalit,
+                foydalanuvchi_id BIGINT NULL EMAS,
+                sarlavha matni NULL emas,
+                BOOLEAN DEFAULT FALSE bajarildi
             )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS reminders (
-                id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                chat_id BIGINT NOT NULL,
-                note TEXT NOT NULL,
-                due_at TIMESTAMPTZ NOT NULL,
-                sent BOOLEAN DEFAULT FALSE
+        "")
+        conn.execute("") ni kuting
+            Agar mavjud bo'lmasa, jadval yaratish eslatmalari (
+                id Katta Seriyali Asosiy Kalit,
+                foydalanuvchi_id BIGINT NULL EMAS,
+                chat_id BIGINT NULL EMAS,
+                matn NULL emasligini eslatma,
+                due_at TIMESTAMPTZ NULL EMAS,
+                BOOLEAN DEFAULT FALSE yuborildi
             )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS finance (
-                id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                kind TEXT NOT NULL,
-                amount NUMERIC NOT NULL,
-                note TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW()
+        "")
+        conn.execute("") ni kuting
+            AGAR MAVJUD BO'LMASA, JADVAL YARATING (
+                id Katta Seriyali Asosiy Kalit,
+                foydalanuvchi_id BIGINT NULL EMAS,
+                turdagi MATN NULL emas,
+                MIQDORI RAQAMLI EMAS, NULL EMAS,
+                matn NULL emasligini eslatma,
+                created_at TIMESTAMPTZ STANDART HOZIR()
             )
-        """)
-    finally:
-        await conn.close()
+        "")
+    nihoyat:
+        conn.close() ni kuting
 
 
 async def get_history(uid):
-    conn = await connect()
-    try:
-        rows = await conn.fetch(
+    conn = kutish conn()
+    sinab ko'ring:
+        qatorlar = kutish ulanish.yig'ish()
             """
-            SELECT role, content FROM chat_history
-            WHERE user_id=$1 ORDER BY id DESC LIMIT 20
+            Chat_historydan rol, kontentni tanlang
+            QAYERDA user_id=$1 BUYURTMA ID DESCRIPTION LIMIT 20
             """,
             uid,
         )
-        return [
+        qaytish [
             {"role": r["role"], "content": r["content"]}
-            for r in reversed(rows)
+            reversed(rows) da r uchun
         ]
-    finally:
-        await conn.close()
+    nihoyat:
+        conn.close() ni kuting
 
 
 async def save_history(uid, role, content):
-    conn = await connect()
-    try:
-        await conn.execute(
+    conn = kutish conn()
+    sinab ko'ring:
+        conn.execute() ni kuting
             """
-            INSERT INTO chat_history(user_id,role,content)
-            VALUES($1,$2,$3)
+            chat_history(user_id,role,content) ga INSERT INTO
+            QIYMATLAR($1,$2,$3)
             """,
-            uid, role, content[:18000],
+            uid, rol, kontent[:18000],
         )
-    finally:
-        await conn.close()
+    nihoyat:
+        conn.close() ni kuting
 
 
-async def send_text(message, text):
-    text = text or "Жавоб топилмади."
-    for i in range(0, len(text), 3900):
-        await message.reply_text(text[i:i + 3900])
+async def send_text(xabar, matn):
+    text = text or "Javob topildi."
+    i uchun diapazonda(0, len(text), 3900):
+        kuting xabar.reply_text(matn[i:i + 3900])
 
 
-async def converse(update, question, image=None, search=False):
+async def converse(yangilash, savol, rasm=yo'q, qidiruv=noto'g'ri):
     uid = update.effective_user.id
-    try:
-        try:
-            old = await get_history(uid)
-        except Exception:
-            log.exception("History error")
-            old = []
+    sinab ko'ring:
+        sinab ko'ring:
+            eski = kutish get_history(uid)
+        istisnodan tashqari:
+            log.exception("Tarix xatosi")
+            eski = []
 
-        if image is not None:
-            encoded = base64.b64encode(image).decode("ascii")
-            content = [
-                {"type": "input_text", "text": question},
+        agar rasm "Yo'q" bo'lmasa:
+            kodlangan = base64.b64encode(rasm).decode("ascii")
+            tarkib = [
+                {"turi": "kiritish_matni", "matn": savol},
                 {
-                    "type": "input_image",
-                    "image_url": "data:image/jpeg;base64," + encoded,
+                    "turi": "kiritish_rasmi",
+                    "image_url": "ma'lumotlar:image/jpeg;base64," + kodlangan,
                 },
             ]
-        else:
-            content = question
+        boshqa:
+            kontent = savol
 
         kwargs = {
             "model": MODEL,
-            "instructions": SYSTEM,
-            "input": old + [{"role": "user", "content": content}],
+            "ko'rsatmalar": TIZIM,
+            "kiritish": eski + [{"role": "foydalanuvchi", "content": content}],
         }
-        if search:
-            kwargs["tools"] = [{"type": "web_search_preview"}]
+        agar qidiruv bo'lsa:
+            kwargs["vositalar"] = [{"turi": "web_search_preview"}]
 
-        try:
-            response = await AI.responses.create(**kwargs)
-            answer = response.output_text or "Жавоб топилмади."
-        except Exception:
-            if not search:
-                raise
-            log.exception("Web search error")
-            kwargs.pop("tools", None)
-            response = await AI.responses.create(**kwargs)
-            answer = (
-                (response.output_text or "Жавоб топилмади.")
-                + "\n\nИнтернет қидируви ишламади."
+        sinab ko'ring:
+            javob = AI.responses.create(**kwargs) ni kuting
+            javob = respond.output_text yoki "Javob topildi".
+        istisnodan tashqari:
+            agar qidiruv bo'lmasa:
+                ko'tarish
+            log.exception("Veb qidiruv xatosi")
+            kwargs.pop("asboblar", Yo'q)
+            javob = AI.responses.create(**kwargs) ni kuting
+            javob = (
+                (response.output_text yoki "Javob topildi.")
+                + "\n\nInternet qidiruvi ishlamadi."
             )
 
-        await send_text(update.effective_message, answer)
+        kuting send_text(yangilash.effective_message, answer)
 
-        try:
-            await save_history(uid, "user", question)
-            await save_history(uid, "assistant", answer)
-        except Exception:
-            log.exception("Save error")
+        sinab ko'ring:
+            kutish save_history(uid, "foydalanuvchi", savol)
+            kutish save_history(uid, "yordamchi", javob)
+        istisnodan tashqari:
+            log.exception("Saqlashda xato")
 
-    except Exception:
-        log.exception("AI error")
-        await update.effective_message.reply_text(
-            "AI хизматида хатолик. Railway Logs'ни текширинг."
+    istisnodan tashqari:
+        log.exception("AI xatosi")
+        yangilanishni kuting.effective_message.reply_text()
+            "AI xizmatida xatolik. Railway Logs'ni tekshiring."
         )
 
 
 async def start(update, context):
-    await update.message.reply_text(HELP)
+    yangilanishni kuting.xabar.javob_matni(YORDAM)
 
 
-async def chat(update, context):
-    await converse(update, update.message.text)
+async def chat(yangilash, kontekst):
+    suhbatni kutish(yangilash, yangilash.message.text)
 
 
-async def search_command(update, context):
-    question = " ".join(context.args).strip()
-    if not question:
-        await update.message.reply_text(
-            "Масалан: /search Ўзбекистон янгиликлари"
+async def search_command(yangilash, kontekst):
+    savol = "".join(context.args).strip()
+    agar savol bo'lmasa:
+        yangilanishni kuting.xabar.javob_matn()
+            "Masalan: /search O'zbekiston yangiliklari"
         )
-        return
-    await converse(update, question, search=True)
+        qaytish
+    converse(yangilash, savol, qidiruv=rost) ni kuting
 
 
-async def photo_handler(update, context):
-    try:
-        photo = update.message.photo[-1]
-        if photo.file_size and photo.file_size > MAX_FILE:
-            await update.message.reply_text(
-                "Расм 15 MB дан кичик бўлсин."
+async def photo_handler(yangilash, kontekst):
+    sinab ko'ring:
+        rasm = yangilash.xabar.rasm[-1]
+        agar photo.file_size va photo.file_size > MAX_FILE bo'lsa:
+            yangilanishni kuting.xabar.javob_matn()
+                "Rasm 15 MB dan kichik bo'lsin."
             )
-            return
-        file = await photo.get_file()
-        data = bytes(await file.download_as_bytearray())
-        await converse(
-            update,
-            update.message.caption or "Расмни таҳлил қил.",
-            image=data,
+            qaytish
+        fayl = fotosuratni kuting.get_file()
+        ma'lumotlar = baytlar(faylni yuklab olish_as_bytearray() ni kuting)
+        suhbatni kuting (
+            yangilash,
+            update.message.caption yoki "Rasmni tasdiq qil.",
+            rasm = ma'lumotlar,
         )
-    except Exception:
-        log.exception("Photo error")
-        await update.message.reply_text("Расмда хатолик.")
+    istisnodan tashqari:
+        log.exception("Foto xatosi")
+        await update.message.reply_text("Rasmda xatolik.")
 
 
-async def voice_handler(update, context):
-    try:
-        voice = update.message.voice
-        if voice.file_size and voice.file_size > MAX_FILE:
-            await update.message.reply_text(
-                "Овозли хабар 15 MB дан кичик бўлсин."
+async def voice_handler(yangilash, kontekst):
+    sinab ko'ring:
+        ovoz = yangilash.xabar.ovoz
+        agar voice.file_size va voice.file_size > MAX_FILE bo'lsa:
+            yangilanishni kuting.xabar.javob_matn()
+                "Ovozli xabar 15 MB dan kichik bo'lsin."
             )
-            return
-        file = await voice.get_file()
+            qaytish
+        fayl = voice.get_file() ni kuting
         audio = io.BytesIO(
-            bytes(await file.download_as_bytearray())
+            baytlar(faylni yuklab olish_as_bytearray() ni kuting)
         )
-        audio.name = "voice.ogg"
-        result = await AI.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio,
+        audio.name = "ovoz.ogg"
+        natija = kutish AI.audio.transcriptions.create(
+            model="pichirlash-1",
+            fayl=audio,
         )
-        await converse(update, result.text)
-    except Exception:
-        log.exception("Voice error")
-        await update.message.reply_text("Овозда хатолик.")
+        converse(yangilash, natija.matn) ni kuting
+    istisnodan tashqari:
+        log.exception("Ovoz xatosi")
+        await update.message.reply_text("Ovozda xatolik.")
 
 
-async def document_handler(update, context):
-    item = update.message.document
-    if item.file_size and item.file_size > MAX_FILE:
-        await update.message.reply_text(
-            "Файл 15 MB дан кичик бўлсин."
+async def document_handler(yangilash, kontekst):
+    element = yangilash.xabar.hujjat
+    agar item.file_size va item.file_size > MAX_FILE bo'lsa:
+        yangilanishni kuting.xabar.javob_matn()
+            "Fayl 15 MB dan kichik bo'lsin."
         )
-        return
+        qaytish
 
-    try:
-        file = await item.get_file()
-        data = bytes(await file.download_as_bytearray())
-        stream = io.BytesIO(data)
-        name = (item.file_name or "").lower()
+    sinab ko'ring:
+        fayl = elementni kuting.get_file()
+        ma'lumotlar = baytlar(faylni yuklab olish_as_bytearray() ni kuting)
+        oqim = io.BaytlarIO(ma'lumotlar)
+        name = (element.file_name yoki "").pastki()
 
-        if name.endswith(".pdf"):
-            reader = PdfReader(stream)
-            content = "\n".join(
-                p.extract_text() or ""
-                for p in reader.pages[:30]
+        agar name.endswith(".pdf") bo'lsa:
+            o'quvchi = PdfReader(oqim)
+            tarkib = "\n".qo'shilish()
+                p.extract_text() yoki ""
+                reader.pages ichida p uchun[:30]
             )
         elif name.endswith(".docx"):
-            doc = Document(stream)
-            parts = [p.text for p in doc.paragraphs]
-            for table in doc.tables:
-                for row in table.rows:
-                    parts.append(
-                        " | ".join(c.text for c in row.cells)
+            doc = Hujjat(oqim)
+            qismlar = [doc.paragraphs ichidagi p uchun p.text]
+            doc.tables faylidagi jadval uchun:
+                table.rows ichidagi qator uchun:
+                    qismlar.append(
+                        " | ".join(c.text for c in c in row.cells)
                     )
-            content = "\n".join(parts)
+            tarkib = "\n".join(qismlar)
         elif name.endswith(".xlsx"):
-            wb = load_workbook(
-                stream, read_only=True, data_only=True
+            wb = yuklash_ish daftari(
+                oqim, faqat o'qish = rost, faqat ma'lumotlar = rost
             )
-            parts = []
-            for ws in wb.worksheets[:5]:
-                parts.append("Варақ: " + ws.title)
-                for row in ws.iter_rows(
+            qismlar = []
+            wb.worksheets faylidagi ws uchun[:5]:
+                parts.append("Varaq: " + ws.title)
+                ws.iter_rows() dagi qator uchun
                     max_row=150,
                     max_col=20,
                     values_only=True,
                 ):
-                    parts.append(
-                        " | ".join(
-                            str(v) if v is not None else ""
-                            for v in row
+                    qismlar.append(
+                        " | ".qo'shilish(
+                            str(v) agar v bo'lmasa, boshqa hech kim ""
+                            qatorda v uchun
                         )
                     )
             wb.close()
-            content = "\n".join(parts)
-        elif name.endswith((".txt", ".csv")):
-            content = data.decode(
-                "utf-8-sig", errors="replace"
+            tarkib = "\n".join(qismlar)
+        elif name.endswith((".txt", ".csv"):
+            tarkib = ma'lumotlar.dekod()
+                "utf-8-sign", xatolar="almashtirish"
             )
-        else:
-            await update.message.reply_text(
-                "PDF, DOCX, XLSX, TXT ёки CSV юборинг."
+        boshqa:
+            yangilanishni kuting.xabar.javob_matn()
+                "PDF, DOCX, XLSX, TXT yoki CSV yuboring."
             )
-            return
+            qaytish
 
-        if not content.strip():
-            await update.message.reply_text(
-                "Матн топилмади. Скан PDF учун OCR керак."
+        agar content.strip() bo'lmasa:
+            yangilanishni kuting.xabar.javob_matn()
+                "Matn topildi. Skan PDF uchun OCR kerak."
             )
-            return
+            qaytish
 
-        question = (
-            update.message.caption
-            or "Ушбу ҳужжатни таҳлил қил."
+        savol = (
+            yangilash.xabar.sarlavhasi
+            yoki "Ushbu hujjatni qo'ying."
         )
-        await converse(
-            update,
-            question + "\n\n" + content[:16000],
+        suhbatni kuting (
+            yangilash,
+            savol + "\n\n" + kontent[:16000],
         )
-    except Exception:
-        log.exception("Document error")
-        await update.message.reply_text(
-            "Ҳужжатни ўқишда хатолик."
+    istisnodan tashqari:
+        log.exception("Hujjat xatosi")
+        yangilanishni kuting.xabar.javob_matn()
+            "Hujjatni o'qishda xatolik."
         )
 
 
-async def task_command(update, context):
-    title = " ".join(context.args).strip()
-    if not title:
-        await update.message.reply_text(
-            "Масалан: /task Ҳисобот тайёрлаш"
+async def task_command(yangilash, kontekst):
+    sarlavha = "".join(context.args).strip()
+    agar sarlavha bo'lmasa:
+        yangilanishni kuting.xabar.javob_matn()
+            "Masalan: /vazifa Hussobot tayyorlash"
         )
-        return
+        qaytish
 
-    conn = await connect()
-    try:
-        row = await conn.fetchrow(
+    conn = kutish conn()
+    sinab ko'ring:
+        qator = kutish ulanish.fetchrow()
             """
-            INSERT INTO tasks(user_id,title)
-            VALUES($1,$2) RETURNING id
+            INSERT INTO vazifalari(foydalanuvchi_identifikatori, sarlavha)
+            VALUES($1,$2) QAYTARILAYOTGAN identifikator
             """,
-            update.effective_user.id, title,
+            yangilash.effective_user.id, sarlavha,
         )
-    finally:
-        await conn.close()
-    await update.message.reply_text(
-        f"Вазифа қўшилди: #{row['id']}"
+    nihoyat:
+        conn.close() ni kuting
+    yangilanishni kuting.xabar.javob_matn()
+        f"Vazifa qo'shildi: #{row['id']}"
     )
 
 
-async def tasks_command(update, context):
-    conn = await connect()
-    try:
-        rows = await conn.fetch(
+async def tasks_command(yangilash, kontekst):
+    conn = kutish conn()
+    sinab ko'ring:
+        qatorlar = kutish ulanish.yig'ish()
             """
-            SELECT id,title,done FROM tasks
-            WHERE user_id=$1 ORDER BY id DESC LIMIT 30
+            SELECT id, sarlavha, bajarilgan vazifalar FROM
+            QAYERDA user_id=$1 BUYURTMA ID DESCRIPTION LIMIT 30
             """,
-            update.effective_user.id,
+            yangilash.effective_user.id,
         )
-    finally:
-        await conn.close()
+    nihoyat:
+        conn.close() ni kuting
 
-    result = "\n".join(
-        ("✅" if r["done"] else "⬜")
+    natija = "\n".qo'shilish(
+        ("✅" agar r["bajarilgan"] bo'lsa, aks holda "⬜")
         + f" #{r['id']} {r['title']}"
-        for r in rows
+        qatorlar ichida r uchun
     )
-    await send_text(
-        update.message, result or "Вазифалар йўқ."
+    kuting send_text()
+        update.message, result or "Vazifalar yo'q."
     )
 
 
-async def done_command(update, context):
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text(
+async def done_command(yangilash, kontekst):
+    agar context.args bo'lmasa yoki context.args[0].isdigit() bo'lmasa:
+        yangilanishni kuting.xabar.javob_matn()
             "Масалан: /done 1"
         )
-        return
+        qaytish
 
-    conn = await connect()
-    try:
-        result = await conn.execute(
+    conn = kutish conn()
+    sinab ko'ring:
+        natija = kutish conn.execute()
             """
-            UPDATE tasks SET done=TRUE
-            WHERE user_id=$1 AND id=$2
+            Vazifalarni YANGILASH SET done=TRUE
+            QAYERDA user_id=$1 VA id=$2
             """,
-            update.effective_user.id,
+            yangilash.effective_user.id,
             int(context.args[0]),
         )
-    finally:
-        await conn.close()
+    nihoyat:
+        conn.close() ni kuting
 
-    await update.message.reply_text(
-        "Бажарилди."
-        if result.endswith("1")
-        else "Вазифа топилмади."
+    yangilanishni kuting.xabar.javob_matn()
+        "Bajarildi."
+        agar natija.endswith("1") bo'lsa
+        else "Vazifa topildi".
     )
 
 
-async def remind_command(update, context):
-    text = " ".join(context.args)
-    match = re.match(
+async def remind_command(yangilash, kontekst):
+    matn = "".join(context.args)
+    moslik = qayta.mosch()
         r"^(\d{4}-\d{2}-\d{2})\s+"
         r"(\d{2}:\d{2})\s+(.+)$",
-        text, re.S,
+        matn, re.S,
     )
-    if not match:
-        await update.message.reply_text(
-            "Масалан: /remind 2026-12-01 09:00 Йиғилиш"
+    agar mos kelmasa:
+        yangilanishni kuting.xabar.javob_matn()
+            "Masalan: /eslatma 2026-12-01 09:00 Yigilish"
         )
-        return
+        qaytish
 
-    try:
-        due = datetime.strptime(
-            match.group(1) + " " + match.group(2),
+    sinab ko'ring:
+        tufayli = sana vaqti.strptime(
+            match.group(1) + "" + match.group(2),
             "%Y-%m-%d %H:%M",
-        ).replace(tzinfo=TZ)
-    except ValueError:
-        await update.message.reply_text(
+        ).almashtirish(tzinfo=TZ)
+    ValueError bundan mustasno:
+        yangilanishni kuting.xabar.javob_matn()
             "Сана нотўғри."
         )
-        return
+        qaytish
 
-    if due <= datetime.now(TZ):
-        await update.message.reply_text(
-            "Келажакдаги вақтни киритинг."
+    agar kerak bo'lsa <= datetime.now(TZ):
+        yangilanishni kuting.xabar.javob_matn()
+            "Kelajakdagi vaqtni kiritishing."
         )
-        return
+        qaytish
 
-    conn = await connect()
-    try:
-        await conn.execute(
+    conn = kutish conn()
+    sinab ko'ring:
+        conn.execute() ni kuting
             """
-            INSERT INTO reminders
-            (user_id,chat_id,note,due_at)
-            VALUES($1,$2,$3,$4)
+            Eslatmalarni INSERT INTO ga joylashtiring
+            (foydalanuvchi_identifikatori, chat_identifikatori, eslatma, sana_vaqti)
+            QIYMATLAR($1,$2,$3,$4)
             """,
-            update.effective_user.id,
-            update.effective_chat.id,
-            match.group(3), due,
+            yangilash.effective_user.id,
+            yangilash.effective_chat.id,
+            match.group(3), tufayli,
         )
-    finally:
-        await conn.close()
-    await update.message.reply_text("Эслатма сақланди.")
+    nihoyat:
+        conn.close() ni kuting
+    await update.message.reply_text("Eslatma saqlandi.")
 
 
-async def reminders_command(update, context):
-    conn = await connect()
-    try:
-        rows = await conn.fetch(
+async def reminders_command(yangilash, kontekst):
+    conn = kutish conn()
+    sinab ko'ring:
+        qatorlar = kutish ulanish.yig'ish()
             """
-            SELECT id,note,due_at FROM reminders
-            WHERE user_id=$1 AND sent=FALSE
-            ORDER BY due_at LIMIT 20
+            FROM eslatmalaridan identifikator, eslatma, sana_vazifasini tanlang
+            QAYERDA user_id=$1 VA sent=FALSE
+            BUYURTMA MUDDATI BO'YICHA LIMIT 20
             """,
-            update.effective_user.id,
+            yangilash.effective_user.id,
         )
-    finally:
-        await conn.close()
+    nihoyat:
+        conn.close() ni kuting
 
-    text = "\n".join(
+    matn = "\n".qo'shilish(
         f"#{r['id']} "
-        f"{r['due_at'].astimezone(TZ):%Y-%m-%d %H:%M}"
+        f"{r['due_at'].astimzone(TZ):%Y-%m-%d %H:%M}"
         f" — {r['note']}"
-        for r in rows
+        qatorlar ichida r uchun
     )
-    await send_text(
-        update.message, text or "Эслатмалар йўқ."
+    kuting send_text()
+        update.message, text yoki "Eslatlar yo'q."
     )
 
 
-async def reminder_worker(app):
-    while True:
-        try:
-            conn = await connect()
-            try:
-                rows = await conn.fetch("""
-                    SELECT id,chat_id,note FROM reminders
-                    WHERE sent=FALSE AND due_at<=NOW()
-                    ORDER BY due_at LIMIT 20
-                """)
-                for row in rows:
-                    try:
-                        await app.bot.send_message(
-                            row["chat_id"],
-                            "⏰ Эслатма: " + row["note"],
+async def reminder_worker(ilova):
+    rost bo'lsa-da:
+        sinab ko'ring:
+            conn = kutish conn()
+            sinab ko'ring:
+                qatorlar = kutish conn.fetch("""
+                    SELECT id, chat_id, eslatma FROM eslatmalari
+                    QAYERDA sent=FALSE VA due_at<=NOW()
+                    BUYURTMA MUDDATI BO'YICHA LIMIT 20
+                "")
+                qatorlar qatori uchun:
+                    sinab ko'ring:
+                        app.bot.send_message() ni kuting
+                            qator["chat_id"],
+                            "⏰ Eslatma: " + qator["eslatma"],
                         )
-                        await conn.execute(
+                        conn.execute() ni kuting
                             """
-                            UPDATE reminders SET sent=TRUE
-                            WHERE id=$1
+                            YANGILASH eslatmalari SET sent=ROST
+                            QAYERDA id=$1
                             """,
-                            row["id"],
+                            qator["id"],
                         )
-                    except Exception:
-                        log.exception("Reminder send error")
-            finally:
-                await conn.close()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.exception("Reminder worker error")
-        await asyncio.sleep(30)
+                    istisnodan tashqari:
+                        log.exception("Eslatma yuborishda xato")
+            nihoyat:
+                conn.close() ni kuting
+        asyncio.CanceledErrordan tashqari:
+            ko'tarish
+        istisnodan tashqari:
+            log.exception("Eslatma ishchisi xatosi")
+        asyncio.sleep(30) ni kuting
 
 
-async def finance_command(update, context, kind):
-    if not context.args:
-        await update.message.reply_text(
-            "Масалан: /expense 25000 Такси"
+async def finance_command(yangilash, kontekst, tur):
+    agar context.args bo'lmasa:
+        yangilanishni kuting.xabar.javob_matn()
+            "Masalan: /xarajati 25000 taksi"
         )
-        return
+        qaytish
 
-    try:
-        amount = Decimal(
+    sinab ko'ring:
+        miqdor = O'nlik(
             context.args[0].replace(",", ".")
         )
-        if not amount.is_finite() or amount <= 0:
-            raise ValueError()
-    except Exception:
-        await update.message.reply_text(
-            "Суммани тўғри киритинг."
+        agar amount.is_finite() bo'lmasa yoki amount <= 0 bo'lsa:
+            ValueError() ni ko'tarish
+    istisnodan tashqari:
+        yangilanishni kuting.xabar.javob_matn()
+            "Summani yordam olishing."
         )
-        return
+        qaytish
 
-    note = " ".join(context.args[1:]) or "Изоҳсиз"
-    conn = await connect()
-    try:
-        await conn.execute(
+    note = " ".join(context.args[1:]) yoki "Izohsiz"
+    conn = kutish conn()
+    sinab ko'ring:
+        conn.execute() ni kuting
             """
-            INSERT INTO finance(user_id,kind,amount,note)
-            VALUES($1,$2,$3,$4)
+            INSERT INTO finance(foydalanuvchi_identifikatori,turmush,miqdor,eslatma)
+            QIYMATLAR($1,$2,$3,$4)
             """,
-            update.effective_user.id,
-            kind, amount, note,
+            yangilash.effective_user.id,
+            turi, miqdori, eslatmasi,
         )
-    finally:
-        await conn.close()
-    await update.message.reply_text(
-        f"Сақланди: {amount} сўм."
+    nihoyat:
+        conn.close() ni kuting
+    yangilanishni kuting.xabar.javob_matn()
+        f"Soqlandi: {sum} so'm."
     )
 
 
-async def income_command(update, context):
-    await finance_command(update, context, "income")
+async def income_command(yangilash, kontekst):
+    finance_command(yangilash, kontekst, "daromad") ni kuting
 
 
-async def expense_command(update, context):
-    await finance_command(update, context, "expense")
+async def expensive_command(yangilash, kontekst):
+    finance_command(yangilash, kontekst, "xarajat") ni kuting
 
 
-async def report_command(update, context):
-    conn = await connect()
-    try:
-        rows = await conn.fetch(
+async def report_command(yangilash, kontekst):
+    conn = kutish conn()
+    sinab ko'ring:
+        qatorlar = kutish ulanish.yig'ish()
             """
-            SELECT kind,COALESCE(SUM(amount),0) AS total
-            FROM finance WHERE user_id=$1 GROUP BY kind
+            SELECT kind, COALESCE(SUM(amount),0) AS jami
+            FROM moliya WHERE user_id=$1 GROUP BY tur
             """,
-            update.effective_user.id,
+            yangilash.effective_user.id,
         )
-    finally:
-        await conn.close()
+    nihoyat:
+        conn.close() ni kuting
 
-    totals = {r["kind"]: r["total"] for r in rows}
-    income = totals.get("income", Decimal(0))
-    expense = totals.get("expense", Decimal(0))
+    jami = {r["turdagi"]: qatorlardagi r uchun r["jami"]}
+    daromad = totals.get("daromad", o'nlik kasr(0))
+    xarajat = totals.get("xarajat", O'nlik kasr(0))
 
-    await update.message.reply_text(
-        "📊 Молиявий ҳисобот\n\n"
-        f"Кирим: {income:,.0f} сўм\n"
-        f"Чиқим: {expense:,.0f} сўм\n"
-        f"Қолдиқ: {income-expense:,.0f} сўм"
+    yangilanishni kuting.xabar.javob_matn()
+        "📊 Moliyaviy o'rnatish\n\n"
+        f"Kirim: {income:,.0f} so'm\n"
+        f"Chiqim: {xarajat:,.0f} so'm\n"
+        f"Qoldiq: {income-expense:,.0f} so'm"
     )
 
 
-async def makeword(update, context):
-    text = " ".join(context.args).strip()
-    if not text:
-        await update.message.reply_text(
-            "Масалан: /makeword Ҳисобот матни"
+async def makeword(yangilash, kontekst):
+    matn = "".join(context.args).strip()
+    agar matn bo'lmasa:
+        yangilanishni kuting.xabar.javob_matn()
+            "Masalan: /makeword Hisobot matni"
         )
-        return
+        qaytish
 
-    doc = Document()
+    doc = Hujjat()
     doc.add_heading("Kichkina Ibrohim", 0)
-    doc.add_paragraph(text)
+    doc.add_paragraph(matn)
 
-    stream = io.BytesIO()
-    doc.save(stream)
-    stream.seek(0)
+    oqim = io.BytesIO()
+    doc.save(oqim)
+    oqim.seek(0)
 
-    await update.message.reply_document(
-        document=stream,
-        filename="hujjat.docx",
+    yangilanishni kuting.xabar.javob_hujjat()
+        hujjat=oqim,
+        fayl nomi="hujjat.docx",
     )
 
 
-async def makeexcel(update, context):
-    text = " ".join(context.args).strip()
-    if not text:
-        await update.message.reply_text(
-            "Масалан: /makeexcel Исм,Сони;Али,5"
+async def makeexcel(yangilash, kontekst):
+    matn = "".join(context.args).strip()
+    agar matn bo'lmasa:
+        yangilanishni kuting.xabar.javob_matn()
+            "Masalan: /makeexcel Ism,Soni;Ali,5"
         )
-        return
+        qaytish
 
-    wb = Workbook()
+    wb = Ish daftari()
     ws = wb.active
-    ws.title = "Маълумотлар"
+    ws.title = "Ma'lumotlar"
 
-    for line in text.split(";"):
+    matndagi satr uchun.split(";"):
         ws.append([
-            value.strip() for value in line.split(",")
+            line.split(",") dagi qiymat uchun value.strip() funksiyasi
         ])
 
-    stream = io.BytesIO()
-    wb.save(stream)
-    stream.seek(0)
+    oqim = io.BytesIO()
+    wb.save(oqim)
+    oqim.seek(0)
 
-    await update.message.reply_document(
-        document=stream,
-        filename="jadval.xlsx",
+    yangilanishni kuting.xabar.javob_hujjat()
+        hujjat=oqim,
+        fayl nomi="jadval.xlsx",
     )
 
 
-async def makepdf(update, context):
-    text = " ".join(context.args).strip()
-    if not text:
-        await update.message.reply_text(
-            "Масалан: /makepdf Ҳисобот матни"
+async def makepdf(yangilash, kontekst):
+    matn = "".join(context.args).strip()
+    agar matn bo'lmasa:
+        yangilanishni kuting.xabar.javob_matn()
+            "Masalan: /makepdf Hisobot matni"
         )
-        return
-
-    font_path = (
-        "/usr/share/fonts/truetype/dejavu/"
-        "DejaVuSans.ttf"
-    )
-    font_name = "Helvetica"
-
-    if os.path.exists(font_path):
-        if "DejaVu" not in pdfmetrics.getRegisteredFontNames():
-            pdfmetrics.registerFont(
-                TTFont("DejaVu", font_path)
-            )
-        font_name = "DejaVu"
-
-    style = ParagraphStyle(
-        "Custom",
-        fontName=font_name,
-        fontSize=11,
-        leading=16,
-    )
-
-    stream = io.BytesIO()
-    pdf = SimpleDocTemplate(stream, pagesize=A4)
-    story = [
-        Paragraph(escape(line) or " ", style)
-        for line in text.split("\n")
-    ]
-    pdf.build(story)
-    stream.seek(0)
-
-    await update.message.reply_document(
-        document=stream,
-        filename="hujjat.pdf",
-    )
-
-
-async def makeslides(update, context):
-    text = " ".join(context.args).strip()
-    if not text:
-        await update.message.reply_text(
-            "Масалан: /makeslides Мавзу;Слайд1;Слайд2"
-        )
-        return
-
-    parts = [
-        p.strip() for p in text.split(";") if p.strip()
-    ]
-    prs = Presentation()
-
-    slide = prs.slides.add_slide(prs.slide_layouts[0])
-    slide.shapes.title.text = parts[0]
-    slide.placeholders[1].text = "Kichkina Ibrohim"
-
-    for part in parts[1:]:
-        slide = prs.slides.add_slide(prs.slide_layouts[1])
-        slide.shapes.title.text = part
-        slide.placeholders[1].text = part
-
-    stream = io.BytesIO()
-    prs.save(stream)
-    stream.seek(0)
-
-    await update.message.reply_document(
-        document=stream,
-        filename="taqdimot.pptx",
-    )
-
-
-async def post_init(app):
-    await init_db()
-    app.bot_data["reminder_task"] = asyncio.create_task(
-        reminder_worker(app)
-    )
-
-
-async def post_shutdown(app):
-    task = app.bot_data.get("reminder_task")
-    if task:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-
-async def error_handler(update, context):
-    log.error(
-        "Telegram handler error: %s",
-        context.error,
-        exc_info=context.error,
-    )
-
-
-def main():
-    app = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
-
-    commands = {
-        "start": start,
-        "help": start,
-        "search": search_command,
-        "task": task_command,
-        "tasks": tasks_command,
-        "done": done_command,
-        "remind": remind_command,
-        "reminders": reminders_command,
-        "income": income_command,
-        "expense": expense_command,
-        "report": report_command,
-        "makeword": makeword,
-        "makeexcel": makeexcel,
-        "makepdf": makepdf,
-        "makeslides": makeslides,
-    }
-
-    for name, handler in commands.items():
-        app.add_handler(CommandHandler(name, handler))
-
-    app.add_handler(
-        MessageHandler(filters.PHOTO, photo_handler)
-    )
-    app.add_handler(
-        MessageHandler(filters.VOICE, voice_handler)
-    )
-    app.add_handler(
-        MessageHandler(filters.Document.ALL, document_handler)
-    )
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            chat,
-        )
-    )
-
-    app.add_error_handler(error_handler)
-
-    log.info("Kichkina Ibrohim ishga tushmoqda...")
-    app.run_polling(
-        drop_pending_updates=True
-    )
-
-
-if __name__ == "__main__":
-    main()
+        q
