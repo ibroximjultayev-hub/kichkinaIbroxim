@@ -68,7 +68,7 @@ SYSTEM = """
 Ҳеч қачон маълумотни ўйлаб топма; янги факт ва валюта курслари учун
 изланиш/манба талаб этилади. Изланиш ишламаса, буни ошкора айт.
 Telegram'да файл тайёрлаш вазифаси дастур функциялари билан бажарилади;
-ўзинг файлни ярата олмайман деб айтма, лекин бажармаган ишингни бажардим дема.
+файл яратишни шу суҳбатдаги дастур бажаради. Файлни ўзинг яратганингни даъво қилма. Файлни юборишни AI матни билан эмас, фақат Telegram reply_document билан бажар. sandbox:/ каби файл ҳаволаларини ҳеч қачон тўқиб чиқарма.
 Instagram аккаунтига тўғридан-тўғри кириш имконияти йўқ;
 Make.com орқали конфигурация қилинган интеграция мавжуд бўлиши мумкин.
 Китоб/қўшиқ ҳуқуқларини ҳурмат қил: пират юклаб олиш, тўлиқ ҳимояланган
@@ -115,7 +115,7 @@ HELP = """
 /income 100000 Маош; /expense 25000 Такси; /report
 
 🎤 Ўзбекча/русча ОВОЗЛИ ХАБАР юборинг — бот уни таниб,
-матн кўринишида қайтариб, топшириқни бажаради.
+матн кўринишида қайтариб, топшириқни бажаради.\n📎 Тайёр файл алоҳида Telegram ҳужжати сифатида келади.
 📎 PDF, DOCX, XLSX, PPTX, TXT, CSV ва расмлар юбориш мумкин.
 ⚠️ Скан PDF учун алоҳида OCR керак; Instagram постини
 эълон қилиш ва сторини санаш учун Make.com интеграцияси керак.
@@ -251,6 +251,14 @@ async def converse(update, question, image=None, search=False):
                 + "\n\nИнтернет қидируви ишламади."
             )
 
+        if re.search(r"sandbox:/[^\s)]+", answer, re.I):
+            log.warning("Model returned a nonfunctional sandbox reference; suppressed")
+            answer = (
+                "⚠️ Бу Telegram'да юклаб олинадиган ҳақиқий файл эмас. "
+                "Ҳужжат тайёрлаш учун мавзусини кўрсатиб: "
+                "«5 та слайд тайёрла» ёки «Word ҳужжат тайёрла» деб ёзинг. "
+                "Файл тайёр бўлса, уни Telegram'га алоҳида файл қилиб юбораман."
+            )
         await send_text(update.effective_message, answer)
 
         try:
@@ -516,12 +524,77 @@ async def information_dispatch(update, context, text):
     return False
 
 
-async def chat(update, context):
-    text = update.message.text or ""
-    # Tools are routed before free-form chat. The AI alone cannot send a file
-    # or read Instagram, so do not let those requests fall into generic chat.
+def _file_followup_kind(text):
+    """Short follow-ups like 'Slayd fayl qani?' must not go to free chat."""
+    t = (text or "").lower().strip()
+    if len(t) > 170:
+        return None
+    if not any(x in t for x in (
+        "қани", "qani", "где", "where", "кани", "қайерда", "qayerda",
+        "файлни юбор", "faylni yubor", "файл ташла", "fayl tashla",
+        "скинь файл", "отправь файл", "файл йўқ", "fayl yo'q",
+        "yoqku fayl", "yo'qku fayl", "йўқку файл", "файл қани", "fayl qani",
+    )):
+        return None
+    if any(x in t for x in ("слайд", "slayd", "pptx", "powerpoint", "презентац", "тақдимот")):
+        return "pptx"
+    if any(x in t for x in ("word", "ворд", "docx", "ҳужжат", "hujjat")):
+        return "docx"
+    if any(x in t for x in ("excel", "эксел", "xlsx", "жадвал", "jadval")):
+        return "xlsx"
+    if any(x in t for x in ("pdf", "пдф")):
+        return "pdf"
+    if any(x in t for x in ("файл", "fayl", "file")):
+        return "last"
+    return None
+
+
+async def _artifact_followup_dispatch(update, context, text):
+    """Resend a REAL Telegram document or regenerate the last matching task."""
+    kind = _file_followup_kind(text)
+    if not kind:
+        return False
+    last_doc = context.user_data.get("last_document") or {}
+    last = context.user_data.get("last_agent_request") or {}
+    if kind == "last":
+        kind = last_doc.get("kind") or last.get("kind") or "last"
+    if last_doc.get("kind") == kind and last_doc.get("file_id"):
+        await update.effective_message.reply_document(
+            document=last_doc["file_id"],
+            caption="📎 Мана олдин тайёрланган файл.",
+        )
+        return True
+
+    prompt = last.get("prompt") if last.get("kind") == kind else None
+    if not prompt:
+        try:
+            history = await get_history(update.effective_user.id)
+            for entry in reversed(history):
+                previous = str(entry.get("content", ""))
+                previous_kind = _agent_kind(previous)
+                if entry.get("role") == "user" and previous_kind and (previous_kind == kind or kind == "last"):
+                    prompt = previous
+                    kind = previous_kind
+                    break
+        except Exception:
+            log.exception("Cannot retrieve previous document request")
+    if not prompt:
+        await update.effective_message.reply_text(
+            "📎 Ҳақиқий файл ҳали тайёрланмаган. "
+            "Мавзусини ёзинг, масалан: «Пахтакор тумани ҳақида 5 та слайд тайёрла»."
+        )
+        return True
+    await update.effective_message.reply_text("📎 Олдинги топшириқ бўйича файлни тайёрлаяпман...")
+    await agent_dispatch(update, context, prompt, force_kind=kind)
+    return True
+
+
+async def dispatch_user_text(update, context, text):
+    """Single action router for typed and transcribed Telegram messages."""
     if _is_instagram_story_count(text):
         await instagram_stories_command(update, context)
+        return
+    if await _artifact_followup_dispatch(update, context, text):
         return
     if _is_file_read_request(text):
         await analyze_recent_file(update, context, text)
@@ -531,6 +604,10 @@ async def chat(update, context):
     if await agent_dispatch(update, context, text):
         return
     await converse(update, text)
+
+
+async def chat(update, context):
+    await dispatch_user_text(update, context, update.effective_message.text or "")
 
 
 async def search_command(update, context):
@@ -605,16 +682,7 @@ async def voice_handler(update, context):
             await msg.reply_text("Овоз тушунарли эмас. Илтимос, қисқароқ ва аниқроқ ёзиб юборинг.")
             return
         await send_text(msg, "🎤 Тушунганим: " + text[:1400])
-        if _is_instagram_story_count(text):
-            await instagram_stories_command(update, context)
-        elif _is_file_read_request(text):
-            await analyze_recent_file(update, context, text)
-        elif await information_dispatch(update, context, text):
-            return
-        elif await agent_dispatch(update, context, text):
-            return
-        else:
-            await converse(update, text)
+        await dispatch_user_text(update, context, text)
     except Exception:
         log.exception("Voice transcription/dispatch error")
         await msg.reply_text(
@@ -643,8 +711,7 @@ async def document_handler(update, context):
                 await update.message.reply_text("Овозли файлдан матн олинмади.")
                 return
             await send_text(update.message, "🎤 Тушунганим: " + transcript[:1400])
-            if not await information_dispatch(update, context, transcript) and not await agent_dispatch(update, context, transcript):
-                await converse(update, transcript)
+            await dispatch_user_text(update, context, transcript)
             return
         if name.endswith((".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".csv")):
             attachments = context.user_data.setdefault("agent_files", [])
@@ -1323,10 +1390,11 @@ def _is_instagram_story_count(text):
     ))
     stories = any(x in t for x in (
         "stories", "story", "сторис", "стори", "истор", "ҳикоя",
+        "istori", "istoriya", "istorya", "istoriyalar", "hikoya", "hikoyalar",
     ))
     count = any(x in t for x in (
         "нечта", "қанча", "канча", "сони", "ҳисоб", "хисоб",
-        "сколько", "количество", "count", "how many", "санаб",
+        "сколько", "количество", "count", "how many", "санаб", "sanab", "nechta", "qancha",
     ))
     return platform and stories and count
 
@@ -1414,15 +1482,17 @@ def _agent_kind(text):
         "тайёрла", "тайёрлаб", "ярат", "ясаб", "қилиб бер", "килиб бер",
         "юбор", "слайд тайёр", "слайд қилиб", "слайд ясаб", "слайд ярат",
         "та слайд", "та слайдли", "презентация тайёр", "ҳужжат тайёр", "маъруза тайёр",
-        "сделай", "создай", "подготов", "create", "generate", "file", "файл қилиб",
-        "word қилиб", "excel қилиб", "pdf қилиб", "pptx", "docx", "xlsx",
+        "сделай", "создай", "подготов", "create", "generate", "файл қилиб",
+        "word қилиб", "excel қилиб", "pdf қилиб", "pptx тайёр", "docx тайёр", "xlsx тайёр",
         "пост тайёрла", "пост ёз", "instagram post", "инстаграм пост",
+        "tayyorla", "tayyorlab", "yarat", "yasab", "qilib ber", "yubor",
+        "hujjat tayyorla", "slayd tayyorla", "fayl qilib",
     ))
     if not intent:
         return None
     if any(w in t for w in ("instagram", "инстаграм", "инста пост", "instapost")) and any(w in t for w in ("пост", "post", "caption", "эълон")):
         return "instagram"
-    if any(w in t for w in ("pptx", "powerpoint", "презентац", "слайд", "инфографик", "taqdimot", "тақдимот", "презентация", "slayd")):
+    if any(w in t for w in ("pptx", "powerpoint", "презентац", "слайд", "инфографик", "taqdimot", "тақдимот", "презентация", "slayd", "infografika")):
         return "pptx"
     if any(w in t for w in ("xlsx", "excel", "эксел", "жадвал", "jadval", "диаграмма", "формула", "ҳисоб-китоб")):
         return "xlsx"
@@ -1691,8 +1761,8 @@ async def mergepdf_command(update, context):
         await update.message.reply_text("PDF файлларни бирлаштиришда хатолик. Шифрланган PDF бўлиши мумкин.")
 
 
-async def agent_dispatch(update, context, prompt):
-    kind = _agent_kind(prompt)
+async def agent_dispatch(update, context, prompt, force_kind=None):
+    kind = force_kind or _agent_kind(prompt)
     if not kind:
         return False
     if kind == "instagram":
@@ -1702,6 +1772,11 @@ async def agent_dispatch(update, context, prompt):
     if kind == "pdf" and any(x in prompt.lower() for x in ("бирлаштир", "merge", "объедин")):
         await mergepdf_command(update, context)
         return True
+    context.user_data["last_agent_request"] = {"kind": kind, "prompt": prompt}
+    try:
+        await save_history(update.effective_user.id, "user", prompt)
+    except Exception:
+        log.exception("Could not persist agent request; proceeding")
     await update.effective_message.reply_text("⏳ Топшириқ қабул қилинди. Ҳужжат тайёрлаяпман...")
     try:
         sources = _extract_agent_sources(context)
@@ -1718,7 +1793,15 @@ async def agent_dispatch(update, context, prompt):
         caption = "✅ Файл тайёр."
         if notes:
             caption += "\n⚠️ " + " | ".join(notes)[:750]
-        await update.effective_message.reply_document(document=output, filename=name, caption=caption[:1000])
+        sent = await update.effective_message.reply_document(
+            document=output, filename=name, caption=caption[:1000]
+        )
+        if sent and getattr(sent, "document", None):
+            context.user_data["last_document"] = {
+                "kind": kind,
+                "file_id": sent.document.file_id,
+                "filename": name,
+            }
     except asyncio.TimeoutError:
         log.exception("Agent timeout")
         await update.effective_message.reply_text("Топшириқ вақти тугади. Қисқароқ топшириқ ёки кичикроқ файл билан қайта уриниб кўринг.")
