@@ -7,16 +7,18 @@ import base64
 import logging
 import json
 import urllib.request
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 import tempfile
 import zipfile
 from pathlib import Path
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from xml.sax.saxutils import escape
 
 import asyncpg
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -51,13 +53,73 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 DB_URL = os.environ["DATABASE_URL"]
 AI = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+SEARCH_MODEL = os.getenv("OPENAI_SEARCH_MODEL", MODEL)
 TZ = ZoneInfo("Asia/Tashkent")
 MAX_FILE = 15 * 1024 * 1024
+VOICE_MODEL = os.getenv("VOICE_MODEL", "gpt-transcribe")
+OWNER_ID = os.getenv("BOT_OWNER_ID", "").strip()
 AGENT_MAX_INPUT = 22000
 
-SYSTEM = """ Сен Kichkina Ibrohim номли шахсий AI ёрдамчисан. Ўзбек кирилл, ўзбек лотин ва рус тилларида ишла. Фойдаланувчи қайси тилда ёзса, ўша тилда жавоб бер. Аввалги суҳбатларни ҳисобга ол. Маълумотларни ўйлаб топма. Бажармаган амалингни бажардим деб айтма. """
+SYSTEM = """
+Сен Kichkina Ibrohim номли Telegram AI ёрдамчисан.
+Ўзбек (кирилл ва лотин), рус ва инглиз тилларида сўров тилида жавоб бер.
+Мавзу: расмий ҳужжатлар, китоблар, мусиқа, фан, технология, янгиликлар,
+ўқиш, қонун, турмуш, саёҳат ва бошқа умумий маълумотлар.
+Ҳеч қачон маълумотни ўйлаб топма; янги факт ва валюта курслари учун
+изланиш/манба талаб этилади. Изланиш ишламаса, буни ошкора айт.
+Telegram'да файл тайёрлаш вазифаси дастур функциялари билан бажарилади;
+ўзинг файлни ярата олмайман деб айтма, лекин бажармаган ишингни бажардим дема.
+Instagram аккаунтига тўғридан-тўғри кириш имконияти йўқ;
+Make.com орқали конфигурация қилинган интеграция мавжуд бўлиши мумкин.
+Китоб/қўшиқ ҳуқуқларини ҳурмат қил: пират юклаб олиш, тўлиқ ҳимояланган
+қўшиқ сўзлари ёки китоб матнларини таклиф қилма. Қисқа мазмун ва
+қонуний/расмий манба ҳаволаларини таклиф қил.
+"""
 
-HELP = """ 🤖 Kichkina Ibrohim AI /start - бошлаш /help - ёрдам /search савол - интернет қидируви /task матн - вазифа қўшиш /tasks - вазифалар /done ID - вазифани якунлаш /remind 2026-12-01 09:00 Йиғилиш /reminders - эслатмалар /income 100000 Маош /expense 25000 Такси /report - молиявий ҳисобот /makeword матн - Word /makeexcel Исм,Сони;Али,5 - Excel /makepdf матн - PDF /makeslides Мавзу;Слайд1;Слайд2 - PowerPoint /instapost мавзу - Instagram учун пост лойиҳаси /mergepdf - юборилган PDF файлларни бирлаштириш Оддий хабар билан ҳам топшириқ беринг: «Пахтакор тумани бўйича 5 та слайд тайёрла» «Маъруза тайёрла ва Word қилиб юбор» «Жадвал ва диаграмма тайёрла» Расм, овоз, PDF, Word ва Excel юбориш мумкин. Google Calendar, Instagram, YouTube ва банк интеграциялари ҳали уланмаган. """
+HELP = """
+🤖 Kichkina Ibrohim — универсал AI агент
+
+💬 Оддий матн ёки ОВОЗ билан топшириқ беринг:
+«Пахтакор тумани ҳақида 5 слайдли PPTX тайёрла»
+«Шу Word файлни ўқиб, PDF ҳисобот тайёрла»
+«Бугунги Ўзбекистон янгиликлари»
+«100 доллар неча сўм?»
+«Менга тарихий китоблар тавсия қил»
+«Ўзбек қўшиқларини тавсия қил»
+
+📁 Файллар:
+/makeword матн — Word (DOCX)
+/makeexcel матн — Excel ва диаграмма
+/makepdf матн — PDF
+/makeslides матн — PowerPoint (PPTX)
+/mergepdf — аввал юборилган PDF файлларни бирлаштириш
+/readfile — юборилган файл мазмунини таҳлил қилиш
+/clearfiles — вақтинча сақланган файлларни тозалаш
+
+🌐 Маълумотлар:
+/search савол — интернетдан маълумот
+/news мавзу — янги хабарлар, манбалари билан
+/rate [USD/EUR/RUB/KZT] — Марказий банк расмий курси
+/convert 100 USD — сўмга ҳисоблаш
+/books мавзу — китоблар ва қисқача мазмун
+/music мавзу — қўшиқчилар, қўшиқлар, расмий ҳаволалар
+
+📸 Instagram:
+/instapost мавзу — пост матни ва тасдиқлаш
+/stories — фаол сторилар (алоҳида Make сценарийси керак)
+/myid — Telegram ID (эгаси учун)
+
+🗓 Режалар:
+/task матн; /tasks; /done ID
+/remind 2026-12-01 09:00 Йиғилиш; /reminders
+/income 100000 Маош; /expense 25000 Такси; /report
+
+🎤 Ўзбекча/русча ОВОЗЛИ ХАБАР юборинг — бот уни таниб,
+матн кўринишида қайтариб, топшириқни бажаради.
+📎 PDF, DOCX, XLSX, PPTX, TXT, CSV ва расмлар юбориш мумкин.
+⚠️ Скан PDF учун алоҳида OCR керак; Instagram постини
+эълон қилиш ва сторини санаш учун Make.com интеграцияси керак.
+"""
 
 
 async def connect():
@@ -67,10 +129,43 @@ async def connect():
 async def init_db():
     conn = await connect()
     try:
-        await conn.execute(""" CREATE TABLE IF NOT EXISTS chat_history ( id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW() ) """)
-        await conn.execute(""" CREATE TABLE IF NOT EXISTS tasks ( id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, title TEXT NOT NULL, done BOOLEAN DEFAULT FALSE ) """)
-        await conn.execute(""" CREATE TABLE IF NOT EXISTS reminders ( id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, chat_id BIGINT NOT NULL, note TEXT NOT NULL, due_at TIMESTAMPTZ NOT NULL, sent BOOLEAN DEFAULT FALSE ) """)
-        await conn.execute(""" CREATE TABLE IF NOT EXISTS finance ( id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, kind TEXT NOT NULL, amount NUMERIC NOT NULL, note TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW() ) """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                title TEXT NOT NULL,
+                done BOOLEAN DEFAULT FALSE
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                chat_id BIGINT NOT NULL,
+                note TEXT NOT NULL,
+                due_at TIMESTAMPTZ NOT NULL,
+                sent BOOLEAN DEFAULT FALSE
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS finance (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                kind TEXT NOT NULL,
+                amount NUMERIC NOT NULL,
+                note TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
     finally:
         await conn.close()
 
@@ -79,7 +174,10 @@ async def get_history(uid):
     conn = await connect()
     try:
         rows = await conn.fetch(
-            """ SELECT role, content FROM chat_history WHERE user_id=$1 ORDER BY id DESC LIMIT 20 """,
+            """
+            SELECT role, content FROM chat_history
+            WHERE user_id=$1 ORDER BY id DESC LIMIT 20
+            """,
             uid,
         )
         return [
@@ -94,7 +192,10 @@ async def save_history(uid, role, content):
     conn = await connect()
     try:
         await conn.execute(
-            """ INSERT INTO chat_history(user_id,role,content) VALUES($1,$2,$3) """,
+            """
+            INSERT INTO chat_history(user_id,role,content)
+            VALUES($1,$2,$3)
+            """,
             uid, role, content[:18000],
         )
     finally:
@@ -169,20 +270,271 @@ async def start(update, context):
     await update.message.reply_text(HELP)
 
 
-async def chat(update, context):
-    if await agent_dispatch(update, context, update.message.text):
+# --- Live information: web search, culture, news and Central Bank rates ---
+
+CBU_API = "https://cbu.uz/uz/arkhiv-kursov-valyut/json/"
+CURRENCY_NAMES = {
+    "доллар": "USD", "долларов": "USD", "dollar": "USD", "dollars": "USD", "usd": "USD", "$": "USD",
+    "евро": "EUR", "euro": "EUR", "eur": "EUR",
+    "рубл": "RUB", "rubl": "RUB", "ruble": "RUB", "rub": "RUB",
+    "тенге": "KZT", "тенгэ": "KZT", "teng": "KZT", "kzt": "KZT",
+    "юан": "CNY", "yuan": "CNY", "cny": "CNY",
+    "фунт": "GBP", "gbp": "GBP", "йен": "JPY", "jpy": "JPY",
+}
+
+
+def _currency_code(text):
+    t = (text or "").lower()
+    for word, code in CURRENCY_NAMES.items():
+        if word in t:
+            return code
+    for word in re.findall(r"[A-Za-z]{3}", text or ""):
+        if word.upper() in ("USD", "EUR", "RUB", "KZT", "CNY", "GBP", "JPY"):
+            return word.upper()
+    return None
+
+
+def _is_currency_request(text):
+    t = (text or "").lower()
+    if not _currency_code(t):
+        return False
+    return any(w in t for w in (
+        "курс", "қурc", "kurs", "exchange", "неча", "канча", "қанча",
+        "сколько", "сум", "сўм", "som", "uzs", "айирбош", "перевод", "конверт"
+    ))
+
+
+def _is_news_request(text):
+    t = (text or "").lower()
+    return any(x in t for x in (
+        "янгилик", "yangilik", "новост", "news", "сўнгги хабар", "свежие события",
+        "latest", "сегодня в мире", "бугун дунёда"
+    ))
+
+
+def _is_music_request(text):
+    t = (text or "").lower()
+    return any(x in t for x in (
+        "қўшиқ", "кушик", "qo'shiq", "qoshiq", "мусиқа", "музыка", "music",
+        "песн", "song", "хонанда", "певец", "певиц", "альбом", "трек", "track"
+    ))
+
+
+def _is_book_request(text):
+    t = (text or "").lower()
+    return any(x in t for x in (
+        "китоб", "kitob", "книга", "книг", "books", "book", "роман", "муаллиф", "автор"
+    ))
+
+
+def _get_cbu_rates():
+    request = urllib.request.Request(
+        CBU_API, headers={"User-Agent": "KichkinaIbrohimBot/3.0", "Accept": "application/json"}
+    )
+    with urllib.request.urlopen(request, timeout=14) as response:
+        rows = json.load(response)
+    if not isinstance(rows, list):
+        raise ValueError("CBU returned unexpected data")
+    return {r["Ccy"].upper(): r for r in rows if isinstance(r, dict) and r.get("Ccy")}
+
+
+def _currency_amount(text):
+    # Number before/after ISO code or currency word: 100 USD, 100 доллар.
+    pat = r"(?:USD|EUR|RUB|KZT|CNY|GBP|JPY|доллар(?:ов)?|евро|рубл[ьяей]*|тенге|\$)"
+    s = (text or "").replace("\u00a0", " ")
+    match = re.search(r"(\d+(?:[.,]\d+)?)\s*" + pat, s, re.I)
+    if not match:
+        match = re.search(pat + r"\s*(\d+(?:[.,]\d+)?)", s, re.I)
+    if not match:
+        return None
+    try:
+        value = Decimal(match.group(1).replace(",", "."))
+        return value if value > 0 and value <= Decimal("1000000000") else None
+    except InvalidOperation:
+        return None
+
+
+def _format_currency_rate(row):
+    nominal = Decimal(str(row.get("Nominal", "1")).replace(" ", ""))
+    rate = Decimal(str(row["Rate"]).replace(" ", "").replace(",", "."))
+    if nominal <= 0 or rate <= 0:
+        raise ValueError("Invalid rate")
+    date = str(row.get("Date") or "сана кўрсатилмаган")
+    return (rate / nominal, date, nominal)
+
+
+async def rate_reply(update, text, show_all=False):
+    await update.effective_message.reply_text("💱 Марказий банк курсларини текширяпман...")
+    try:
+        rates = await asyncio.to_thread(_get_cbu_rates)
+        code = _currency_code(text)
+        selected = ("USD", "EUR", "RUB", "KZT") if show_all or not code else (code,)
+        lines = ["💱 Ўзбекистон Марказий банкининг расмий курслари:"]
+        for c in selected:
+            if c not in rates:
+                lines.append(f"{c}: маълумот топилмади")
+                continue
+            one, date, nominal = _format_currency_rate(rates[c])
+            lines.append(f"1 {c} = {one:,.2f} сўм (амал қилиш санаси: {date})")
+        amount = _currency_amount(text)
+        if amount is not None and code in rates:
+            one, _, _ = _format_currency_rate(rates[code])
+            lines.append(f"\n{amount:,.2f} {code} ≈ {(amount * one):,.2f} сўм")
+        lines.append("\nМанба: https://cbu.uz/uz/arkhiv-kursov-valyut/")
+        lines.append("Эслатма: банкларнинг сотиб олиш/сотиш курслари фарқ қилиши мумкин.")
+        await update.effective_message.reply_text("\n".join(lines))
+    except (HTTPError, URLError, ValueError, KeyError, InvalidOperation, TimeoutError):
+        log.exception("CBU request failed")
+        await update.effective_message.reply_text("Марказий банкдан ҳозир курс олиб бўлмади. https://cbu.uz/uz/arkhiv-kursov-valyut/")
+
+
+async def rates_command(update, context):
+    await rate_reply(update, " ".join(context.args), show_all=not bool(context.args))
+
+
+async def convert_command(update, context):
+    query = " ".join(context.args).strip()
+    if not query or _currency_code(query) is None or _currency_amount(query) is None:
+        await update.effective_message.reply_text("Масалан: /convert 100 USD ёки /convert 250 EUR")
         return
-    await converse(update, update.message.text)
+    await rate_reply(update, query)
+
+
+async def myid_command(update, context):
+    await update.effective_message.reply_text(
+        f"Сизнинг Telegram ID: {update.effective_user.id}\n"
+        "Instagram'ни фақат ўзингиз бошқариш учун Railway Variables'га BOT_OWNER_ID қўшинг."
+    )
+
+
+def _is_owner(update):
+    return OWNER_ID.isdecimal() and str(update.effective_user.id) == OWNER_ID
+
+
+async def _web_answer(update, question, *, mode="search"):
+    """Only claim live sources if hosted search really succeeds."""
+    ask = (question or "").strip()[:2000]
+    if not ask:
+        await update.effective_message.reply_text("Қандай мавзуни қидирай? Масалан: /news Ўзбекистон")
+        return
+    await update.effective_message.reply_text("🌐 Интернетдан маълумот қидиряпман...")
+    today = datetime.now(TZ).date().isoformat()
+    search_prompt = (
+        f"Бугунги сана: {today}. Фойдаланувчининг тилида жавоб бер. "
+        "Манбаларнинг ҳаволалари ва хабар саналарини кўрсат, "
+        "ўйлаб топилган ҳавола/сана ёзма. Текширилмаган янгиликни факт сифатида айтма. "
+        "Қисқача, мазмунли ва иложи бўлса 3-6 асосий пункт билан ёз."
+    )
+    if mode == "music":
+        search_prompt += " Мусиқа/қўшиқ учун ижрочи, альбом, расмий манба ва қонуний тинглаш ҳаволаларини бер. Тўлиқ қўшиқ матнини берма."
+    elif mode == "books":
+        search_prompt += " Китоб номи, муаллифи, жанри, қисқача мазмун ва қонуний манбани бер. Муаллифлик ҳуқуқини ҳурмат қил."
+    search_error = None
+    for tool_type in ("web_search", "web_search_preview"):
+        try:
+            resp = await asyncio.wait_for(
+                AI.responses.create(
+                    model=SEARCH_MODEL,
+                    instructions=search_prompt,
+                    input=ask,
+                    tools=[{"type": tool_type}],
+                    tool_choice="required",
+                ),
+                timeout=85,
+            )
+            # Search tool output is authoritative for whether search was attempted.
+            if not any(getattr(x, "type", "") == "web_search_call" for x in getattr(resp, "output", [])):
+                raise ValueError("no actual web search occurred")
+            answer = resp.output_text or "Маълумот топилмади."
+            links = []
+            for item in getattr(resp, "output", []):
+                for part in getattr(item, "content", []) or []:
+                    for annotation in getattr(part, "annotations", []) or []:
+                        if getattr(annotation, "type", "") == "url_citation":
+                            uri = getattr(annotation, "url", "")
+                            if uri.startswith("https://") and uri not in links:
+                                links.append(uri)
+            if links:
+                answer += "\n\n🔗 Текширилган манбалар:\n" + "\n".join(links[:5])
+            await send_text(update.effective_message, answer)
+            return
+        except Exception as exc:
+            search_error = exc
+            log.warning("Web search (%s) unavailable: %s", tool_type, type(exc).__name__)
+    log.error("All web search methods failed: %r", search_error)
+    await update.effective_message.reply_text(
+        "Ҳозир жонли интернет қидируви ишламади. Шунинг учун янги хабарларни ёки расмий ҳаволаларни ўйлаб топмайман. "
+        "Railway Logs ва OpenAI API web_search рухсатларини текширинг."
+    )
+
+
+async def news_command(update, context):
+    await _web_answer(update, " ".join(context.args) or "Ўзбекистон ва жаҳоннинг сўнгги муҳим янгиликлари", mode="news")
+
+
+async def music_command(update, context):
+    await _web_answer(update, " ".join(context.args) or "Ўзбекистондаги машҳур ва янги қўшиқлар", mode="music")
+
+
+async def books_command(update, context):
+    topic = " ".join(context.args) or "Мени қизиқтириши мумкин бўлган 5 та яхши китоб тавсия қил"
+    if any(w in topic.lower() for w in ("янги", "2026", "охирги", "муаллиф", "сотиб", "ссылка", "ҳавола", "скач")):
+        await _web_answer(update, topic, mode="books")
+    else:
+        await converse(update, topic)
+
+
+async def readfile_command(update, context):
+    await analyze_recent_file(update, context, "Юборилган файл(лар)ни ўқи, асосий маълумот ва рақамларни тушунтир")
+
+
+async def clearfiles_command(update, context):
+    for key in ("agent_files", "agent_photo"):
+        context.user_data.pop(key, None)
+    await update.effective_message.reply_text("🧹 Юборилган файлларнинг вақтинчалик нусхалари тозаланди.")
+
+
+async def information_dispatch(update, context, text):
+    """Natural language commands should use the real tool before AI chatter."""
+    t = (text or "").lower()
+    # News and currency always require real external sources.
+    if _is_currency_request(text):
+        await rate_reply(update, text)
+        return True
+    if _is_news_request(text):
+        await _web_answer(update, text, mode="news")
+        return True
+    if _is_music_request(text) and not _agent_kind(text):
+        await _web_answer(update, text, mode="music")
+        return True
+    if _is_book_request(text) and not _agent_kind(text):
+        if any(w in t for w in ("янги", "2026", "сотиб", "ҳавола", "ссылка", "yangi", "latest")):
+            await _web_answer(update, text, mode="books")
+        else:
+            await converse(update, text)
+        return True
+    return False
+
+
+async def chat(update, context):
+    text = update.message.text or ""
+    # Tools are routed before free-form chat. The AI alone cannot send a file
+    # or read Instagram, so do not let those requests fall into generic chat.
+    if _is_instagram_story_count(text):
+        await instagram_stories_command(update, context)
+        return
+    if _is_file_read_request(text):
+        await analyze_recent_file(update, context, text)
+        return
+    if await information_dispatch(update, context, text):
+        return
+    if await agent_dispatch(update, context, text):
+        return
+    await converse(update, text)
 
 
 async def search_command(update, context):
-    question = " ".join(context.args).strip()
-    if not question:
-        await update.message.reply_text(
-            "Масалан: /search Ўзбекистон янгиликлари"
-        )
-        return
-    await converse(update, question, search=True)
+    await _web_answer(update, " ".join(context.args), mode="search")
 
 
 async def photo_handler(update, context):
@@ -204,28 +556,71 @@ async def photo_handler(update, context):
         await update.message.reply_text("Расмда хатолик.")
 
 
-async def voice_handler(update, context):
+async def _transcribe_recording(data, filename):
+    """Transcribe Uzbek, Russian and other supported languages without translating them."""
+    if not data:
+        raise ValueError("empty audio recording")
+    audio = io.BytesIO(data)
+    audio.name = filename
     try:
-        voice = update.message.voice
-        if voice.file_size and voice.file_size > MAX_FILE:
-            await update.message.reply_text(
-                "Овозли хабар 15 MB дан кичик бўлсин."
-            )
+        result = await asyncio.wait_for(
+            AI.audio.transcriptions.create(
+                model=VOICE_MODEL,
+                file=audio,
+                prompt=(
+                    "Ушбу ёзув ўзбекча (кирилл/лотин) ёки русча бўлиши мумкин. "
+                    "Пахтакор тумани, ИИВ, маҳалла, маъруза, ҳисобот, PPTX, Word, "
+                    "Excel, Instagram, доллар, курс, қўшиқ, китоб. "
+                    "Гапни эшитилган тилида айнан матнга кўчир."
+                ),
+            ),
+            timeout=95,
+        )
+    except BadRequestError:
+        # Some providers may not support a prompt for a configured transcription model.
+        audio.seek(0)
+        result = await asyncio.wait_for(
+            AI.audio.transcriptions.create(model=VOICE_MODEL, file=audio),
+            timeout=95,
+        )
+    return (getattr(result, "text", "") or "").strip()
+
+
+async def voice_handler(update, context):
+    msg = update.effective_message
+    recording = msg.voice or msg.audio
+    if not recording:
+        return
+    if recording.file_size and recording.file_size > MAX_FILE:
+        await msg.reply_text("Овозли файл 15 MB дан кичик бўлсин.")
+        return
+    await msg.reply_text("🎤 Овозли хабарни эшитиб, ўзбекча/русча матнга айлантиряпман...")
+    try:
+        telegram_file = await recording.get_file()
+        data = bytes(await telegram_file.download_as_bytearray())
+        # Telegram voice notes are OGG/Opus; extension-bearing filenames matter.
+        filename = getattr(recording, "file_name", None) or "voice.ogg"
+        text = await _transcribe_recording(data, filename)
+        if not text:
+            await msg.reply_text("Овоз тушунарли эмас. Илтимос, қисқароқ ва аниқроқ ёзиб юборинг.")
             return
-        file = await voice.get_file()
-        audio = io.BytesIO(
-            bytes(await file.download_as_bytearray())
-        )
-        audio.name = "voice.ogg"
-        result = await AI.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio,
-        )
-        if not await agent_dispatch(update, context, result.text):
-            await converse(update, result.text)
+        await send_text(msg, "🎤 Тушунганим: " + text[:1400])
+        if _is_instagram_story_count(text):
+            await instagram_stories_command(update, context)
+        elif _is_file_read_request(text):
+            await analyze_recent_file(update, context, text)
+        elif await information_dispatch(update, context, text):
+            return
+        elif await agent_dispatch(update, context, text):
+            return
+        else:
+            await converse(update, text)
     except Exception:
-        log.exception("Voice error")
-        await update.message.reply_text("Овозда хатолик.")
+        log.exception("Voice transcription/dispatch error")
+        await msg.reply_text(
+            "Овозни танишда хатолик. Railway Logs'да аниқ сабаб кўринади. "
+            "OpenAI API калити, баланс ва VOICE_MODEL=gpt-transcribe эканини текширинг."
+        )
 
 
 async def document_handler(update, context):
@@ -241,10 +636,20 @@ async def document_handler(update, context):
         data = bytes(await file.download_as_bytearray())
         stream = io.BytesIO(data)
         name = (item.file_name or "").lower()
+        if name.endswith((".ogg", ".oga", ".mp3", ".m4a", ".wav", ".webm", ".mp4")):
+            await update.message.reply_text("🎤 Аудио файлини матнга айлантиряпман...")
+            transcript = await _transcribe_recording(data, name)
+            if not transcript:
+                await update.message.reply_text("Овозли файлдан матн олинмади.")
+                return
+            await send_text(update.message, "🎤 Тушунганим: " + transcript[:1400])
+            if not await information_dispatch(update, context, transcript) and not await agent_dispatch(update, context, transcript):
+                await converse(update, transcript)
+            return
         if name.endswith((".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".csv")):
             attachments = context.user_data.setdefault("agent_files", [])
             attachments.append({"name": item.file_name or "file", "data": data})
-            del attachments[:-5]
+            del attachments[:-3]
         if name.endswith(".pptx"):
             prs = Presentation(stream)
             content = "\n".join(shape.text for slide in prs.slides for shape in slide.shapes if shape.has_text_frame)
@@ -336,7 +741,10 @@ async def task_command(update, context):
     conn = await connect()
     try:
         row = await conn.fetchrow(
-            """ INSERT INTO tasks(user_id,title) VALUES($1,$2) RETURNING id """,
+            """
+            INSERT INTO tasks(user_id,title)
+            VALUES($1,$2) RETURNING id
+            """,
             update.effective_user.id, title,
         )
     finally:
@@ -350,7 +758,10 @@ async def tasks_command(update, context):
     conn = await connect()
     try:
         rows = await conn.fetch(
-            """ SELECT id,title,done FROM tasks WHERE user_id=$1 ORDER BY id DESC LIMIT 30 """,
+            """
+            SELECT id,title,done FROM tasks
+            WHERE user_id=$1 ORDER BY id DESC LIMIT 30
+            """,
             update.effective_user.id,
         )
     finally:
@@ -376,7 +787,10 @@ async def done_command(update, context):
     conn = await connect()
     try:
         result = await conn.execute(
-            """ UPDATE tasks SET done=TRUE WHERE user_id=$1 AND id=$2 """,
+            """
+            UPDATE tasks SET done=TRUE
+            WHERE user_id=$1 AND id=$2
+            """,
             update.effective_user.id,
             int(context.args[0]),
         )
@@ -423,7 +837,11 @@ async def remind_command(update, context):
     conn = await connect()
     try:
         await conn.execute(
-            """ INSERT INTO reminders (user_id,chat_id,note,due_at) VALUES($1,$2,$3,$4) """,
+            """
+            INSERT INTO reminders
+            (user_id,chat_id,note,due_at)
+            VALUES($1,$2,$3,$4)
+            """,
             update.effective_user.id,
             update.effective_chat.id,
             match.group(3), due,
@@ -437,7 +855,11 @@ async def reminders_command(update, context):
     conn = await connect()
     try:
         rows = await conn.fetch(
-            """ SELECT id,note,due_at FROM reminders WHERE user_id=$1 AND sent=FALSE ORDER BY due_at LIMIT 20 """,
+            """
+            SELECT id,note,due_at FROM reminders
+            WHERE user_id=$1 AND sent=FALSE
+            ORDER BY due_at LIMIT 20
+            """,
             update.effective_user.id,
         )
     finally:
@@ -459,7 +881,11 @@ async def reminder_worker(app):
         try:
             conn = await connect()
             try:
-                rows = await conn.fetch(""" SELECT id,chat_id,note FROM reminders WHERE sent=FALSE AND due_at<=NOW() ORDER BY due_at LIMIT 20 """)
+                rows = await conn.fetch("""
+                    SELECT id,chat_id,note FROM reminders
+                    WHERE sent=FALSE AND due_at<=NOW()
+                    ORDER BY due_at LIMIT 20
+                """)
                 for row in rows:
                     try:
                         await app.bot.send_message(
@@ -467,7 +893,10 @@ async def reminder_worker(app):
                             "⏰ Эслатма: " + row["note"],
                         )
                         await conn.execute(
-                            """ UPDATE reminders SET sent=TRUE WHERE id=$1 """,
+                            """
+                            UPDATE reminders SET sent=TRUE
+                            WHERE id=$1
+                            """,
                             row["id"],
                         )
                     except Exception:
@@ -504,7 +933,10 @@ async def finance_command(update, context, kind):
     conn = await connect()
     try:
         await conn.execute(
-            """ INSERT INTO finance(user_id,kind,amount,note) VALUES($1,$2,$3,$4) """,
+            """
+            INSERT INTO finance(user_id,kind,amount,note)
+            VALUES($1,$2,$3,$4)
+            """,
             update.effective_user.id,
             kind, amount, note,
         )
@@ -527,7 +959,10 @@ async def report_command(update, context):
     conn = await connect()
     try:
         rows = await conn.fetch(
-            """ SELECT kind,COALESCE(SUM(amount),0) AS total FROM finance WHERE user_id=$1 GROUP BY kind """,
+            """
+            SELECT kind,COALESCE(SUM(amount),0) AS total
+            FROM finance WHERE user_id=$1 GROUP BY kind
+            """,
             update.effective_user.id,
         )
     finally:
@@ -669,12 +1104,51 @@ async def makeslides(update, context):
     )
 
 
-async def instagram_post_command(update, context):
+# Commands share the same structured AI agent as natural-language prompts.
+async def professional_word(update, context):
+    prompt = " ".join(context.args).strip()
+    if not prompt:
+        await update.effective_message.reply_text("Масалан: /makeword Пахтакор тумани бўйича маъруза тайёрла")
+        return
+    await agent_dispatch(update, context, "Word DOCX файл қилиб тайёрла: " + prompt)
+
+
+async def professional_excel(update, context):
+    prompt = " ".join(context.args).strip()
+    if not prompt:
+        await update.effective_message.reply_text("Масалан: /makeexcel 2025 ва 2026 йил жиноятчилик рақамлари бўйича диаграмма")
+        return
+    await agent_dispatch(update, context, "Excel XLSX жадвал ва диаграмма қилиб тайёрла: " + prompt)
+
+
+async def professional_pdf(update, context):
+    prompt = " ".join(context.args).strip()
+    if not prompt:
+        await update.effective_message.reply_text("Масалан: /makepdf Хавфсиз муҳит бўйича ҳисобот")
+        return
+    await agent_dispatch(update, context, "PDF ҳужжат тайёрла: " + prompt)
+
+
+async def professional_slides(update, context):
+    prompt = " ".join(context.args).strip()
+    if not prompt:
+        await update.effective_message.reply_text("Масалан: /makeslides Пахтакор туманида хавфсиз муҳит бўйича 5 слайд")
+        return
+    await agent_dispatch(update, context, "PowerPoint PPTX слайд тайёрла: " + prompt)
+
+
+async def instagram_post_command(update, context, topic=None):
+    if not _is_owner(update):
+        await update.effective_message.reply_text(
+            "🔐 Instagram бошқаруви фақат бот эгаси учун. "
+            "Telegram'да /myid ни босинг ва Railway Variables'га BOT_OWNER_ID қўшинг."
+        )
+        return
     if update.effective_chat.type != "private":
         await update.message.reply_text("Бу буйруқни ботга шахсий чатда юборинг.")
         return
 
-    topic = " ".join(context.args).strip()
+    topic = (topic if topic is not None else " ".join(context.args)).strip()
     if not topic:
         await update.message.reply_text(
             "Масалан: /instapost Янги маҳсулотимиз ҳақида пост"
@@ -728,6 +1202,9 @@ def _send_instagram_webhook(url, payload):
 async def instagram_approval(update, context):
     query = update.callback_query
     await query.answer()
+    if not _is_owner(update):
+        await query.message.reply_text("🔒 Бу Instagram тасдиғи фақат бот эгаси учун.")
+        return
     if query.message.chat.type != "private":
         return
     draft = context.user_data.get("instagram_draft")
@@ -778,20 +1255,180 @@ async def instagram_approval(update, context):
 
 
 
+# ---- Read-only file analysis and Instagram active-story checking ----
+
+def _is_file_read_request(text):
+    t = (text or "").lower()
+    subject = any(x in t for x in (
+        "файл", "ҳужжат", "хужжат", "document", "документ", "pdf", "пдф",
+        "word", "ворд", "excel", "эксел", "презентац", "тақдимот",
+    ))
+    reading = any(x in t for x in (
+        "ичини", "ичида", "мазмуни", "ўрган", "урган", "ўқи", "уки",
+        "очиб", "таҳлил қил", "тахлил қил", "анализ", "прочитай",
+        "изучи", "содержим", "read file", "open file", "summariz",
+    ))
+    creation = any(x in t for x in (
+        "тайёрла", "ярат", "ясаб", "қилиб бер", "килиб бер", "юбор",
+        "создай", "сделай", "generate", "create", "конверт", "ўзгартир",
+    ))
+    return subject and reading and not creation
+
+
+async def analyze_recent_file(update, context, instruction):
+    if not context.user_data.get("agent_files"):
+        await update.effective_message.reply_text(
+            "📎 Ҳали файл юборилмаган. PDF, Word, Excel, PPTX ёки TXT "
+            "файлини менга юборинг. Уни ўқиб, мазмунини таҳлил қиламан."
+        )
+        return
+    sources = _extract_agent_sources(context)
+    if not sources.strip():
+        await update.effective_message.reply_text(
+            "Файлдан ўқиладиган матн топилмади. "
+            "Скан PDF бўлса, матнли нусхасини ёки расмларини юборинг."
+        )
+        return
+    await update.effective_message.reply_text("📖 Файлни ўрганиб, мазмунини текширяпман...")
+    try:
+        result = await asyncio.wait_for(
+            AI.responses.create(
+                model=MODEL,
+                instructions=(
+                    "Сен файлни таҳлил қиладиган ишончли ёрдамчисан. "
+                    "Юборилган манбага таян. Мавжуд фактлар ва рақамларни сақла, "
+                    "файлда йўқ маълумотни қўшма. Фойдаланувчи тилида "
+                    "қисқача мазмун, асосий фактлар ва етишмайдиган маълумотларни айт. "
+                    "Янги файл яратганингни даъво қилма."
+                ),
+                input=(
+                    f"СЎРОВ: {instruction[:1000]}\n\n"
+                    f"ФАЙЛ МАЗМУНИ:\n{sources[:AGENT_MAX_INPUT]}"
+                ),
+            ),
+            timeout=90,
+        )
+        await send_text(update.effective_message, result.output_text or "Матн таҳлил қилинмади.")
+    except Exception:
+        log.exception("Attachment analysis error")
+        await update.effective_message.reply_text(
+            "Файлни таҳлил қилишда хатолик юз берди. Railway Logs'ни текширинг."
+        )
+
+
+def _is_instagram_story_count(text):
+    t = (text or "").lower()
+    platform = any(x in t for x in (
+        "instagram", "инстаграм", "insta", "профилим", "profilim",
+    ))
+    stories = any(x in t for x in (
+        "stories", "story", "сторис", "стори", "истор", "ҳикоя",
+    ))
+    count = any(x in t for x in (
+        "нечта", "қанча", "канча", "сони", "ҳисоб", "хисоб",
+        "сколько", "количество", "count", "how many", "санаб",
+    ))
+    return platform and stories and count
+
+
+def _make_hook_is_valid(url):
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    return parsed.scheme == "https" and host.startswith("hook.") and host.endswith(".make.com") and bool(parsed.path.strip("/"))
+
+
+def _read_make_story_count(url, telegram_user_id):
+    payload = json.dumps({
+        "event": "instagram_active_stories_count",
+        "telegram_user_id": telegram_user_id,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=payload, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=25) as response:
+        raw = response.read(120000).decode("utf-8")
+    result = json.loads(raw)
+    # Make: Instagram for Business (Facebook login) -> List stories ->
+    # Webhooks Response. Response JSON: {"count": <number>}.
+    if not isinstance(result, dict):
+        raise ValueError("Make response must be JSON object")
+    count = result.get("count")
+    if isinstance(count, str) and count.isdecimal():
+        count = int(count)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        stories = result.get("stories")
+        if isinstance(stories, list):
+            count = len(stories)
+        else:
+            raise ValueError("Make response lacks numeric count")
+    return count
+
+
+async def instagram_stories_command(update, context):
+    if not _is_owner(update):
+        await update.effective_message.reply_text(
+            "🔐 /stories фақат бот эгаси учун. /myid орқали BOT_OWNER_ID ни созланг."
+        )
+        return
+    if update.effective_chat.type != "private":
+        await update.effective_message.reply_text("Бу буйруқни ботга шахсий чатда юборинг.")
+        return
+    url = os.getenv("MAKE_STORIES_WEBHOOK_URL", "").strip()
+    if not _make_hook_is_valid(url):
+        await update.effective_message.reply_text(
+            "📸 Instagram сториларини ҳозир санай олмайман: "
+            "MAKE_STORIES_WEBHOOK_URL ҳали уланмаган.\n\n"
+            "Make.com'да алоҳида Webhooks → Instagram for Business "
+            "(Facebook login) → List stories → Webhook response "
+            "сценарийсини созлаш керак. Бу фақат ҳозирги фаол "
+            "сториларни санайди, архивдагиларни эмас."
+        )
+        return
+    await update.effective_message.reply_text("🔎 Instagram'даги фаол сториларни текширяпман...")
+    try:
+        count = await asyncio.to_thread(
+            _read_make_story_count, url, update.effective_user.id
+        )
+        await update.effective_message.reply_text(
+            f"📸 Instagram аккаунтингизда ҳозир {count} та фаол сторис бор. "
+            "Бу ҳисобга архивдагилар кирмайди."
+        )
+    except Exception:
+        log.exception("Instagram story count failed")
+        await update.effective_message.reply_text(
+            "Instagram сториларини санаб бўлмади. Make сценарийсида "
+            "Instagram for Business → List stories ва Webhooks Response "
+            "созланганини текширинг. Жавоб JSON кўринишида "
+            "{\"count\": 0} каби қайтиши керак."
+        )
+
+
 # ---- AI document agent: Telegram text -> structured content -> file ----
 # Content is generated by AI; file layout is generated locally, never by arbitrary AI code.
 
 def _agent_kind(text):
-    t = text.lower()
+    t = (text or "").lower()
+    # A question about Excel/PowerPoint/book must not accidentally create files.
+    intent = any(x in t for x in (
+        "тайёрла", "тайёрлаб", "ярат", "ясаб", "қилиб бер", "килиб бер",
+        "юбор", "слайд тайёр", "слайд қилиб", "слайд ясаб", "слайд ярат",
+        "та слайд", "та слайдли", "презентация тайёр", "ҳужжат тайёр", "маъруза тайёр",
+        "сделай", "создай", "подготов", "create", "generate", "file", "файл қилиб",
+        "word қилиб", "excel қилиб", "pdf қилиб", "pptx", "docx", "xlsx",
+        "пост тайёрла", "пост ёз", "instagram post", "инстаграм пост",
+    ))
+    if not intent:
+        return None
     if any(w in t for w in ("instagram", "инстаграм", "инста пост", "instapost")) and any(w in t for w in ("пост", "post", "caption", "эълон")):
         return "instagram"
-    if any(w in t for w in ("pptx", "powerpoint", "презентац", "слайд", "инфографик", "taqdimot")):
+    if any(w in t for w in ("pptx", "powerpoint", "презентац", "слайд", "инфографик", "taqdimot", "тақдимот", "презентация", "slayd")):
         return "pptx"
     if any(w in t for w in ("xlsx", "excel", "эксел", "жадвал", "jadval", "диаграмма", "формула", "ҳисоб-китоб")):
         return "xlsx"
     if any(w in t for w in ("pdf", "пдф")):
         return "pdf"
-    if any(w in t for w in ("docx", "word", "ворд", "маъруза", "билдирги", "маълумотнома", "расмий ҳужжат", "ҳисобот тайёрла", "ҳужжат тайёрла")):
+    if any(w in t for w in ("docx", "word", "ворд", "маъруза", "билдирги", "маълумотнома", "расмий ҳужжат", "ҳисобот тайёрла", "ҳужжат тайёрла", "документ тайёрла", "ариза тайёрла")):
         return "docx"
     return None
 
@@ -1059,10 +1696,8 @@ async def agent_dispatch(update, context, prompt):
     if not kind:
         return False
     if kind == "instagram":
-        # Existing approval flow is preserved; do not publish directly.
-        class Args:
-            args = prompt.split()
-        await instagram_post_command(update, Args())
+        # Keep actual Telegram context, including per-user draft and approval state.
+        await instagram_post_command(update, context, topic=prompt)
         return True
     if kind == "pdf" and any(x in prompt.lower() for x in ("бирлаштир", "merge", "объедин")):
         await mergepdf_command(update, context)
@@ -1138,11 +1773,21 @@ def main():
         "income": income_command,
         "expense": expense_command,
         "report": report_command,
-        "makeword": makeword,
-        "makeexcel": makeexcel,
-        "makepdf": makepdf,
-        "makeslides": makeslides,
+        "makeword": professional_word,
+        "makeexcel": professional_excel,
+        "makepdf": professional_pdf,
+        "makeslides": professional_slides,
+        "news": news_command,
+        "rate": rates_command,
+        "convert": convert_command,
+        "books": books_command,
+        "music": music_command,
+        "song": music_command,
+        "myid": myid_command,
+        "readfile": readfile_command,
+        "clearfiles": clearfiles_command,
         "instapost": instagram_post_command,
+        "stories": instagram_stories_command,
         "mergepdf": mergepdf_command,
     }
 
@@ -1153,7 +1798,7 @@ def main():
         MessageHandler(filters.PHOTO, photo_handler)
     )
     app.add_handler(
-        MessageHandler(filters.VOICE, voice_handler)
+        MessageHandler(filters.VOICE | filters.AUDIO, voice_handler)
     )
     app.add_handler(
         MessageHandler(filters.Document.ALL, document_handler)
