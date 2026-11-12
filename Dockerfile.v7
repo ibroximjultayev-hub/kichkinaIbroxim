@@ -1,0 +1,20 @@
+# JARVIS v7 opt-in browser build. This filename is deliberately not Dockerfile:
+# uploading it will not automatically replace the working Railway v6 build.
+FROM python:3.13-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+WORKDIR /app
+COPY requirements.txt requirements-v7.txt ./
+RUN pip install --no-cache-dir -r requirements-v7.txt
+# Download only Chromium's headless shell to save disk/installation time.
+RUN python -m playwright install --with-deps --only-shell chromium
+COPY . .
+# Run without root privileges. Pages are untrusted; even so this is not a
+# complete isolation boundary and should never be used with site credentials.
+RUN useradd --uid 10001 --create-home jarvis \
+    && chown -R jarvis:jarvis /app /ms-playwright
+USER jarvis
+CMD ["python", "JARVIS_v7_launcher.py"]
